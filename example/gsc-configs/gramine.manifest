@@ -1,0 +1,5 @@
+fs.mounts = [
+    { path = "/app/tmp/", type = "tmpfs" },
+]
+
+sgx.remote_attestation = "dcap"

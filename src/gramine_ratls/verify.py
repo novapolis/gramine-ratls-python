@@ -15,6 +15,11 @@ class AttestationError(Exception):
 
 
 class Client:
+    """
+    An HTTP client for RA-TLS server that verifies the
+    server provided RA-TLS certificate for every requests
+    it makes.
+    """
     def __init__(
         self,
         url,

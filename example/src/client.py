@@ -61,7 +61,7 @@ class CustomClient:
 
 if __name__ == "__main__":
     mr_enclave = (
-        "8e7165ec1e2b9fec3bef2e0ddceefb54f2694b81aef0f11fe1f5f42ea9b1491f"
+        "6f88f2ddb3462d80e9c22a7457d97a9596809279b11dd9830adeeb6b5e1609c3"
     )
     mr_signer = (
         "c3f66efa33385b1e61a24f8ff52f89c3aee05737bc79eba92aa0f9cac97f7626"

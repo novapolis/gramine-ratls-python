@@ -72,7 +72,7 @@ def get_pem_bytes_from_der(
     elif ret != -42:  # Should be MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL
         raise Exception(
             "Internal error while executing mbedtls_pem_write_bufer.",
-            "Got {ret}.",
+            f"Got {ret}.",
         )
 
     # Allocate memory and call again to write
@@ -97,7 +97,7 @@ def get_pem_bytes_from_der(
     if ret != 0:
         raise Exception(
             "Internal error while executing mbedtls_pem_write_bufer.",
-            "Got {ret}.",
+            f"Got {ret}.",
         )
 
     return bytes(pem)
@@ -114,6 +114,8 @@ def write_ra_tls_key_and_crt(
 
     The key and certificate content are then written out
     either in "der" or "pem" format to the specified location.
+    These can be used in place of standard TLS certificate and key
+    for setting up a server with RA-TLS.
 
     Args:
         key_file_path (str):  The file path for the created key
@@ -149,13 +151,13 @@ def write_ra_tls_key_and_crt(
     if ret < 0:
         raise Exception(
             (
-                "Non-zero return value for ra_tls_create_key_and_crt_der",
-                "function. Value was {ret}",
+                f"Non-zero return value for ra_tls_create_key_and_crt_der",
+                f"function. Value was {ret}",
             )
         )
 
     if format == "pem":
-        # Note: ried using ssl.DER_cert_to_PEM_cert() but did not work out
+        # Note: tried using ssl.DER_cert_to_PEM_cert() but did not work out
         key_bytes_dem = get_pem_bytes_from_der(
             "-----BEGIN EC PRIVATE KEY-----\n",
             "-----END EC PRIVATE KEY-----\n",

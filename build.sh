@@ -3,11 +3,11 @@
 docker kill $(docker ps -a -q)
 docker image rm gsc-ratls-test gsc-ratls-test-unsigned:latest ratls-test:latest
 
-docker build --target sdd_private_session_prod -t ratls-test .
+docker build -t ratls-test .
 
 cd gsc-configs/gsc/
 
-./gsc build -c ../config.yaml --rm ratls-test ../private-session.manifest
+./gsc build -c ../config.yaml --rm ratls-test ../gramine.manifest
 
 ./gsc sign-image -c ../config.yaml  ratls-test /home/azureuser/.config/gramine/enclave-key.pem
 
