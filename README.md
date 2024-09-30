@@ -40,7 +40,7 @@ We use [Gramine](https://gramineproject.io/) to run the server inside an Intel S
 
 Let us (very briefly and on a very high level) explain how Gramine works. Initially, SGX enclave were meant to be developped using the SGX development kit. An application would be "SGX aware" and be split into a "trusted" part, running inside SGX, and an "untrusted" part, running outside SGX. An application starts with untrusted code, and calls to EENTER and EEXIT instructions are required to enter/exit the enclave. The instruction set available to enclave code is very limited (e.g. no priviledged instructions, which means no system calls in the Linux world). The development of SGX aware applications is usually done in compiled languages such as C++ and leverages the Intel provided SGX Software Development Kit.
 
-Gramine started as a research project, with the goal of running entire legacy applications inside SGX enclaves. Gramine comes in the form of a Library OS (LibOS) that can be seen as the operating system that runs the target application. The LibOS intercepts all application requests that are made to the host OS (most of these would otherwise error since SGX does not allow priviledged instructions.), and either implements them itself or transfers them to the host OS and sanitizes the resutls. Gramine implements a Platform Adaptation Layer (PAL) for interfacing between the LibOS and the host OS. For more information on Intel SGX and Gramine, it is highly recommended to read the Gramine documentation in details. A good starting point is [the Gramine Introduction to SGX](https://gramine.readthedocs.io/en/stable/sgx-intro.html) and the [Gramine features page](https://gramine.readthedocs.io/en/stable/sgx-intro.html).
+Gramine started as a research project, with the goal of running entire legacy applications inside SGX enclaves. Gramine comes in the form of a Library OS (LibOS) that can be seen as the operating system that runs the target application. The LibOS intercepts all application requests that are made to the host OS (most of these would otherwise error since SGX does not allow priviledged instructions.), and either implements them itself or transfers them to the host OS and sanitizes the results. Gramine implements a Platform Adaptation Layer (PAL) for interfacing between the LibOS and the host OS. For more information on Intel SGX and Gramine, it is highly recommended to read the Gramine documentation in details. A good starting point is [the Gramine Introduction to SGX](https://gramine.readthedocs.io/en/stable/sgx-intro.html) and the [Gramine features page](https://gramine.readthedocs.io/en/stable/sgx-intro.html).
 
 Additionnally to protecting running code from adversaries with priviledged access to the host OS or physical machine, SGX also allows to verify the integrity of an application's trusted part, even remotely. On a very very high level (again), enclave attestation works as follows: an enclave produces a quote (comprising code measurements, enclave author, hardware measurements, etc.) that is transfered to the remote verifier. The remote verifier then verifies the quote with the help of Intel (or the cloud provider's) quote verification services. Gramine provides some higher level functionality to complete the enclave attestation/verification process. We will use ra-tls and focus on this option only. The idea behind ra-tls is to include the attestation quote inside the standard server TLS certificate. When the remote verifier connects to the enclave (the server), it extracts the quote from the server TLS certificate and verifies it before finishing the TLS connection handshake. For more information about this, it is highly recommended to read the [Gramine Attestation and Secret Provisioning](https://gramine.readthedocs.io/en/stable/attestation.html) page.
 
@@ -68,9 +68,32 @@ Let's continue our journey by installing Gramine:
 
 A few more steps and Intel SGX tools are required, see [here](https://gramine.readthedocs.io/en/latest/sgx-setup.html) for more content on this. The code in this repo does not directly interact with most of these components (only indirectly through Gramine, but a bit of context is good for general understanding):
 - Create an SGX signing key with the command `gramine-sgx-gen-private-key`. This will write a pem key to `$HOME/.config/gramine/enclave-key` by default. Such a key is needed to sign enclaves at creation. Resulting measurements from this operation are used to verify enclave attestations once the enclave is deployed.
-- Intel PSW (Platform SoftWare): (Note: this is already done on Azure SGX VMs). This provides several SGX functionalities from loading and initializing SGX enclaves to management of so-called "architectural" enclaves. It runs as a Linux service (aesm_service for Application Enclave Services Manager). For information, the interface to this service is through a socket located at `/var/run/aesmd/aesm.socket` (this will be usefull later, because we need to provide this socket to the server container). TODO: check if we had to install this + link to instructions
+- Intel PSW (Platform SoftWare): (Note: this is already done on Azure SGX VMs). This provides several SGX functionalities from loading and initializing SGX enclaves to management of so-called "architectural" enclaves. It runs as a Linux service (aesm_service for Application Enclave Services Manager). For information, the interface to this service is through a socket located at `/var/run/aesmd/aesm.socket` (this will be usefull later, because we need to provide this socket to the server container).
 - Intel DCAP library: This binary library provides functionality for dcap quote generation and verification. TODO check if we had to install this + instructions
-- Intel QPL library: This binary library provides functionality for the communication with DCAP verification services. TODO add qpl config + difference with azure_dcap library.
+- Intel QPL library: This binary library provides functionality for the communication with DCAP verification services. One need to change the Intel QPL configuration file at this location `/etc/sgx_default_qcnl.conf`. Azure gives an example of a configuration file [here](https://learn.microsoft.com/en-us/azure/security/fundamentals/trusted-hardware-identity-management). This configuration can be use for testing in Azure:
+
+```console
+{ 
+        "pccs_url": "https://global.acccache.azure.net/sgx/certification/v3/", 
+        "use_secure_cert": true, 
+        "collateral_service": "https://global.acccache.azure.net/sgx/certification/v3/",  
+        "pccs_api_version": "3.1", 
+        "retry_times": 6, 
+        "retry_delay": 5, 
+        "pck_cache_expire_hours": 24, 
+        "verify_collateral_cache_expire_hours": 24, 
+        "custom_request_options": { 
+            "get_cert": { 
+                "headers": { 
+                    "metadata": "true" 
+                }, 
+                "params": { 
+                    "api-version": "2021-07-22-preview" 
+                } 
+            } 
+        } 
+    }
+```
 
 At this stage, it is highly recommended to check the setup by running the python `sgx-quote.py` example from the Gramine repository (see [here](https://github.com/gramineproject/gramine/tree/master/CI-Examples/python)). This will also help understand more about how an application is "graminized", The Gramine CLI tool `is-sgx-available` can also be of good use to verify the setup.
 
