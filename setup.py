@@ -10,8 +10,8 @@ long_description = (this_directory / "README.md").read_text()
 setup(
     name="gramine-ratls",
     packages=find_packages(),
-    package_dir={"": "src"},
-    version="0.0.3",
+    package_dir={"gramine-ratls": "src/gramine-ratls"},
+    version="0.0.4",
     description="Gramine RATLS Python wrapper.",
     long_description=long_description,
     long_description_content_type="text/markdown",

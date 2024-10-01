@@ -60,6 +60,12 @@ Gramine Shielded Containers (GSC) is used to "Graminize" a standard Docker image
 
 ## Installation and Setup
 
+Note: This code has been tested with the following infrastructure:
+
+* Azure VM (DC1s v3)
+* Ubuntu 22.04
+* Python 3.10
+
 ### Gramine and SGX Tools
 
 Let's continue our journey by installing Gramine:
@@ -69,7 +75,13 @@ Let's continue our journey by installing Gramine:
 A few more steps and Intel SGX tools are required, see [here](https://gramine.readthedocs.io/en/latest/sgx-setup.html) for more content on this. The code in this repo does not directly interact with most of these components (only indirectly through Gramine, but a bit of context is good for general understanding):
 - Create an SGX signing key with the command `gramine-sgx-gen-private-key`. This will write a pem key to `$HOME/.config/gramine/enclave-key` by default. Such a key is needed to sign enclaves at creation. Resulting measurements from this operation are used to verify enclave attestations once the enclave is deployed.
 - Intel PSW (Platform SoftWare): (Note: this is already done on Azure SGX VMs). This provides several SGX functionalities from loading and initializing SGX enclaves to management of so-called "architectural" enclaves. It runs as a Linux service (aesm_service for Application Enclave Services Manager). For information, the interface to this service is through a socket located at `/var/run/aesmd/aesm.socket` (this will be usefull later, because we need to provide this socket to the server container).
-- Intel DCAP library: This binary library provides functionality for dcap quote generation and verification. TODO check if we had to install this + instructions
+- Intel DCAP library: This binary library provides functionality for dcap quote generation and verification. With ubuntu 22.04, it is required to install different packages to setup DCAP attestation. See [here](https://docs.oasis.io/node/run-your-node/prerequisites/set-up-trusted-execution-environment-tee/#:~:text=AESM%3A%20error%2030%E2%80%8B&text=Ensure%20you%20have%20all%20required,Attestation%20or%20EPID%20attestation%20sections.) for more details (section DCAP attestation).
+
+```console
+sudo apt update
+sudo apt install sgx-aesm-service libsgx-aesm-ecdsa-plugin libsgx-aesm-quote-ex-plugin libsgx-dcap-default-qpl
+```
+
 - Intel QPL library: This binary library provides functionality for the communication with DCAP verification services. One need to change the Intel QPL configuration file at this location `/etc/sgx_default_qcnl.conf`. Azure gives an example of a configuration file [here](https://learn.microsoft.com/en-us/azure/security/fundamentals/trusted-hardware-identity-management). This configuration can be use for testing in Azure:
 
 ```console
@@ -140,14 +152,14 @@ The GSC configuration, the server's manifest file and the Python requirements fi
 To generate the graminized and signed Docker image for the server, run the following only once:
 
 ```
-./gsc build-gramine --rm --no-cache -c ../config.yaml gramine-base
+cd example/gsc-configs/gsc/
+
+./gsc build-gramine --rm --no-cache -c ../config_build_base.yaml gramine-base
 ```
 
 This will build the base gramine image, without any application specific files. The next steps will use this base image as a starting point, avoiding the rebuild of the base image everytime they are executed.
 
 ```
-cd gsc-configs/gsc/
-
 ./gsc build -c ../config.yaml --rm ratls-test ../gramine.manifest
 
 ./gsc sign-image -c ../config.yaml  ratls-test /home/azureuser/.config/gramine/enclave-key.pem
