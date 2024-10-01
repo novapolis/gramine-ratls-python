@@ -82,7 +82,7 @@ sudo apt update
 sudo apt install sgx-aesm-service libsgx-aesm-ecdsa-plugin libsgx-aesm-quote-ex-plugin libsgx-dcap-default-qpl
 ```
 
-- Intel QPL library: This binary library provides functionality for the communication with DCAP verification services. One need to change the Intel QPL configuration file at this location `/etc/sgx_default_qcnl.conf`. Azure gives an example of a configuration file [here](https://learn.microsoft.com/en-us/azure/security/fundamentals/trusted-hardware-identity-management). This configuration can be use for testing in Azure:
+- Intel QPL library: This binary library provides functionality for the communication with DCAP verification services. One needs to change the Intel QPL configuration file at this location `/etc/sgx_default_qcnl.conf`. Azure gives an example of a configuration file [here](https://learn.microsoft.com/en-us/azure/security/fundamentals/trusted-hardware-identity-management). This configuration can be used for testing in Azure:
 
 ```console
 { 
