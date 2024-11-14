@@ -4,25 +4,22 @@ https://github.com/gramineproject/gramine/commit/1a1869468aef7085d6c9d722adf9d1d
 """
 
 import ctypes
-import http.client
 import os
 import ssl
-import urllib.parse
-
+import socket
 
 class AttestationError(Exception):
     pass
 
 
-class Client:
+class TlsClient:
     """
-    An HTTP client for RA-TLS server that verifies the
+    A TLS client for RA-TLS server that verifies the
     server provided RA-TLS certificate for every requests
     it makes.
     """
     def __init__(
         self,
-        url,
         mr_enclave,
         mr_signer,
         isv_prod_id,
@@ -33,11 +30,6 @@ class Client:
         allow_sw_hardening_needed,
         protocol="dcap",
     ):
-        # Parse url and enforce TLS
-        self.url = urllib.parse.urlsplit(url)
-        if self.url.scheme != "https":
-            raise ValueError(f"Needs https:// URI, found {self.url.scheme}")
-
         # Require at least enclave or signer measurement
         if (mr_enclave, mr_signer) == (None, None):
             raise TypeError("Need at least one of: mrenclave, mrsigner")
@@ -119,38 +111,22 @@ class Client:
         if ret < 0:
             raise AttestationError(ret)
 
-    def _request(self, method, endpoint, headers={}, data=None):
+    def connect(self, hostname, port):
         # Create TLS connection
         context = (
             ssl._create_unverified_context()
         )  # pylint: disable=protected-access
-        conn = http.client.HTTPSConnection(self.url.netloc, context=context)
-        conn.connect()
+        
+        # Connect to the server and initiate the TLS handshake
+        sock = socket.create_connection((hostname, port))
+        ssock = context.wrap_socket(sock, server_hostname=hostname)
 
         # Verify enclave attestation with proper callback function
         try:
             # NEVER SEND ANYTHING TO THE SERVER BEFORE THIS LINE
-            self._verify_ra_tls_cb(conn.sock.getpeercert(binary_form=True))
+            self._verify_ra_tls_cb(ssock.getpeercert(binary_form=True))
         except AttestationError:
-            conn.close()
+            ssock.close()
             raise
-
-        # Setup and send request
-        path = self.url.path
-        if self.url.query:
-            path += self.url.query
-        path = f"{path}/{endpoint}"
-
-        headers = {
-            "host": self.url.hostname,
-            **headers,
-        }
-
-        conn.request(method, path, body=data)
-        return conn.getresponse()
-
-    def get(self, endpoint, headers={}):
-        return self._request("GET", endpoint, headers)
-
-    def post(self, endpoint, headers={}, data=None):
-        return self._request("POST", endpoint, headers, data)
+        
+        return ssock
