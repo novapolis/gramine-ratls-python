@@ -103,9 +103,9 @@ def get_pem_bytes_from_der(
     return bytes(pem)
 
 
-def write_ra_tls_key_and_crt(
-    key_file_path: str, cert_file_path: str, format: str = "pem"
-) -> None:
+def get_ra_tls_key_and_crt(
+    format: str = "pem"
+) -> tuple[str, str]:
     """
     This function loads the gramine libra_tls_attest.so
     binary library and calls the ra_tls_create_key_and_crt_der
@@ -184,6 +184,13 @@ def write_ra_tls_key_and_crt(
         raise Exception(
             f'Format should be either "der" or "pem", but was {format}.'
         )
+        
+    return (key_bytes_dem, crt_bytes_dem)
+        
+def write_ra_tls_key_and_crt(
+    key_file_path: str, cert_file_path: str, format: str = "pem"
+) -> None:
+    (key_bytes_dem, crt_bytes_dem) = get_ra_tls_key_and_crt(format)
 
     with open(key_file_path, "wb") as key_file:
         key_file.write(key_bytes_dem)

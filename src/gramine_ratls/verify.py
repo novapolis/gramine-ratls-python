@@ -12,10 +12,10 @@ class AttestationError(Exception):
     pass
 
 
-class TlsClient:
+class Verifier:
     """
-    A TLS client for RA-TLS server that verifies the
-    server provided RA-TLS certificate for every requests
+    A TLS client or server for RA-TLS server that verifies the
+    server provided RA-TLS certificate for every request
     it makes.
     """
     def __init__(
