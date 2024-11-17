@@ -6,6 +6,9 @@ https://github.com/gramineproject/gramine/commit/1a1869468aef7085d6c9d722adf9d1d
 import ctypes
 import os
 import ssl
+from OpenSSL import SSL
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 import socket
 
 class AttestationError(Exception):
@@ -150,7 +153,57 @@ class RaTlsClient:
         # Verify enclave attestation with proper callback function
         try:
             # NEVER SEND ANYTHING TO THE SERVER BEFORE THIS LINE
-            self._verify_ra_tls_cb(ssock.getpeercert(binary_form=True))
+            self.verifier._verify_ra_tls_cb(ssock.getpeercert(binary_form=True))
+        except AttestationError:
+            ssock.close()
+            raise
+        
+        return ssock
+    
+class MutualRaTlsClient:
+    def __init__(
+        self,
+        client_cert,
+        client_key,
+        mr_enclave,
+        mr_signer,
+        isv_prod_id,
+        isv_svn,
+        allow_debug_enclave_insecure,
+        allow_outdated_tcb_insecure,
+        allow_hw_config_needed,
+        allow_sw_hardening_needed,
+        protocol="dcap",
+    ):
+        self.client_cert = client_cert
+        self.client_key = client_key
+        self.verifier = Verifier(
+            mr_enclave,
+            mr_signer,
+            isv_prod_id,
+            isv_svn,
+            allow_debug_enclave_insecure,
+            allow_outdated_tcb_insecure,
+            allow_hw_config_needed,
+            allow_sw_hardening_needed,
+            protocol,
+        )
+    
+    def connect(self, hostname, port):
+        # Create TLS connection
+        context = (
+            ssl._create_unverified_context()
+        )  # pylint: disable=protected-access
+        context.load_cert_chain(certfile=self.client_cert, keyfile=self.client_key)
+        
+        # Connect to the server and initiate the TLS handshake
+        sock = socket.create_connection((hostname, port))
+        ssock = context.wrap_socket(sock, server_hostname=hostname)
+
+        # Verify enclave attestation with proper callback function
+        try:
+            # NEVER SEND ANYTHING TO THE SERVER BEFORE THIS LINE
+            self.verifier._verify_ra_tls_cb(ssock.getpeercert(binary_form=True))
         except AttestationError:
             ssock.close()
             raise
@@ -185,8 +238,11 @@ class RaTlsServer:
             allow_sw_hardening_needed,
             protocol,
         )
+        self.server_socket = None
         self.tls_socket = None
         
+    def __enter__(self):
+        return self
     def __exit__(self, exec_type, exec_val, exec_tb):
         self.close()
             
@@ -195,27 +251,33 @@ class RaTlsServer:
             self.tls_socket.close()
     
     def bind_and_listen(self, hostname, port):
-        # Create TLS connection
-        context = (
-            ssl._create_unverified_context()
-        )  # pylint: disable=protected-access
-        context.load_cert_chain(certfile=self.server_cert, keyfile=self.server_key)
-        context.verify_mode = ssl.CERT_REQUIRED
-        
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        server_socket.bind((hostname, port))
-        server_socket.listen()
-        self.tls_socket = context.wrap_socket(server_socket, server_side=True)
+        context = SSL.Context(SSL.TLS_SERVER_METHOD)
+        context.use_privatekey_file(self.server_key)
+        context.use_certificate_chain_file(self.server_cert)
+
+        # Enforce client certificates
+        context.set_verify(
+            SSL.VERIFY_PEER | SSL.VERIFY_FAIL_IF_NO_PEER_CERT, self.verify_callback
+        )
+
+        # Start the server
+        self.server_socket = socket.socket()
+        self.tls_socket = SSL.Connection(context, self.server_socket)
+
+        self.tls_socket.bind((hostname, port))
+        self.tls_socket.listen()
+
+    def verify_callback(self, connection, x509_cert, errno, depth, preverify_ok):
+        """Custom certificate verification callback."""
+        if depth == 0:  # Only check the end-entity certificate
+            try:
+                self.verifier._verify_ra_tls_cb(x509_cert.to_cryptography().public_bytes(encoding=serialization.Encoding.DER))
+            except AttestationError:
+                return False
+            return True
+        return preverify_ok
 
     def accept(self):
         conn, addr = self.tls_socket.accept()
-        # Verify enclave attestation with proper callback function
-        try:
-            # NEVER SEND ANYTHING TO THE SERVER BEFORE THIS LINE
-            # TODO: be more flexible about multiple allowed mr_enclaves, etc.
-            self._verify_ra_tls_cb(conn.getpeercert(binary_form=True))
-        except AttestationError:
-            conn.close()
-            raise
         
         return (conn, addr)
