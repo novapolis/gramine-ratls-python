@@ -111,6 +111,32 @@ class Verifier:
         if ret < 0:
             raise AttestationError(ret)
 
+
+class RaTlsClient:
+    def __init__(
+        self,
+        mr_enclave,
+        mr_signer,
+        isv_prod_id,
+        isv_svn,
+        allow_debug_enclave_insecure,
+        allow_outdated_tcb_insecure,
+        allow_hw_config_needed,
+        allow_sw_hardening_needed,
+        protocol="dcap",
+    ):
+        self.verifier = Verifier(
+            mr_enclave,
+            mr_signer,
+            isv_prod_id,
+            isv_svn,
+            allow_debug_enclave_insecure,
+            allow_outdated_tcb_insecure,
+            allow_hw_config_needed,
+            allow_sw_hardening_needed,
+            protocol,
+        )
+    
     def connect(self, hostname, port):
         # Create TLS connection
         context = (
@@ -130,3 +156,66 @@ class Verifier:
             raise
         
         return ssock
+    
+class RaTlsServer:
+    def __init__(
+        self,
+        server_cert,
+        server_key,
+        mr_enclave,
+        mr_signer,
+        isv_prod_id,
+        isv_svn,
+        allow_debug_enclave_insecure,
+        allow_outdated_tcb_insecure,
+        allow_hw_config_needed,
+        allow_sw_hardening_needed,
+        protocol="dcap",
+    ):
+        self.server_cert = server_cert
+        self.server_key = server_key
+        self.verifier = Verifier(
+            mr_enclave,
+            mr_signer,
+            isv_prod_id,
+            isv_svn,
+            allow_debug_enclave_insecure,
+            allow_outdated_tcb_insecure,
+            allow_hw_config_needed,
+            allow_sw_hardening_needed,
+            protocol,
+        )
+        self.tls_socket = None
+        
+    def __exit__(self, exec_type, exec_val, exec_tb):
+        self.close()
+            
+    def close(self):
+        if self.tls_socket is not None:
+            self.tls_socket.close()
+    
+    def bind_and_listen(self, hostname, port):
+        # Create TLS connection
+        context = (
+            ssl._create_unverified_context()
+        )  # pylint: disable=protected-access
+        context.load_cert_chain(certfile=self.server_cert, keyfile=self.server_key)
+        context.verify_mode = ssl.CERT_REQUIRED
+        
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind((hostname, port))
+        server_socket.listen()
+        self.tls_socket = context.wrap_socket(server_socket, server_side=True)
+
+    def accept(self):
+        conn, addr = self.tls_socket.accept()
+        # Verify enclave attestation with proper callback function
+        try:
+            # NEVER SEND ANYTHING TO THE SERVER BEFORE THIS LINE
+            # TODO: be more flexible about multiple allowed mr_enclaves, etc.
+            self._verify_ra_tls_cb(conn.getpeercert(binary_form=True))
+        except AttestationError:
+            conn.close()
+            raise
+        
+        return (conn, addr)
