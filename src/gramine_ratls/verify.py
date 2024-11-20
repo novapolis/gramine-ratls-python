@@ -6,31 +6,51 @@ https://github.com/gramineproject/gramine/commit/1a1869468aef7085d6c9d722adf9d1d
 import ctypes
 import os
 import ssl
+import asyncio
 from OpenSSL import SSL
 from cryptography import x509
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
 import socket
+
+NON_STANDARD_INTEL_SGX_QUOTE_OID = "0.6.9.42.840.113741.1337.6"
+TCG_DICE_TAGGED_EVIDENCE_OID = "2.23.133.5.4.9"
 
 class AttestationError(Exception):
     pass
 
+class RaTlsCertInfo:
+    def __init__(self, crt_bytes_der):
+        self.certificate = x509.load_der_x509_certificate(bytes(crt_bytes_der), default_backend())
+        extension = self.certificate.extensions.get_extension_for_oid(
+            x509.ObjectIdentifier(NON_STANDARD_INTEL_SGX_QUOTE_OID)) # TODO: use evidence format instead
+        if (extension is None):
+            raise ValueError("No SGX quote extension.")
+        self.quote = extension.value.public_bytes()
+        self.attributes_flags = int.from_bytes(self.quote[96:104], byteorder="little")
+        self.debug_bit = self.quote[96] & 2 > 0
+        self.attributes_xfrm = int.from_bytes(self.quote[104:112], byteorder="little")
+        self.mr_enclave = self.quote[112:144]
+        self.mr_signer = self.quote[176:208]
+        self.isv_prodid = int.from_bytes(self.quote[304:306], byteorder="little")
+        self.isv_svn = int.from_bytes(self.quote[306:308], byteorder="little")
+        self.report_data = self.quote[368:432]
 
-class Verifier:
+class RaTlsVerifier:
     """
-    A TLS client or server for RA-TLS server that verifies the
-    server provided RA-TLS certificate for every request
-    it makes.
+    A TLS cert for RA-TLS that can verify the
+    provided RA-TLS certificate.
     """
     def __init__(
         self,
-        mr_enclave,
-        mr_signer,
-        isv_prod_id,
-        isv_svn,
-        allow_debug_enclave_insecure,
-        allow_outdated_tcb_insecure,
-        allow_hw_config_needed,
-        allow_sw_hardening_needed,
+        mr_enclave="any",
+        mr_signer="any",
+        isv_prod_id=0,
+        isv_svn=0,
+        allow_debug_enclave_insecure=True,
+        allow_outdated_tcb_insecure=True,
+        allow_hw_config_needed=True,
+        allow_sw_hardening_needed=True,
         protocol="dcap",
     ):
         # Require at least enclave or signer measurement
@@ -87,7 +107,15 @@ class Verifier:
         else:
             os.environ[var] = value
 
-    def _verify_ra_tls_cb(self, cert):
+    def custom_verify_callback(self, mr_enclave, mr_signer, isv_prod_id, isv_svn, debug_flag):
+        """
+        Custom callback for inheritors to implement, allowing you to filter
+        mr_enclave, mr_signer, etc. using custom logic, not just a single value.
+        Leave the appropriate constructor args to their default values, e.g. "any"
+        """
+        return True
+
+    def verify_ra_tls(self, cert_bytes_der):
         # Set environment variables for gramine verification function to use
         self._ra_tls_setenv("RA_TLS_MRENCLAVE", self.mr_enclave, "any")
         self._ra_tls_setenv("RA_TLS_MRSIGNER", self.mr_signer, "any")
@@ -110,104 +138,64 @@ class Verifier:
         )
 
         # Execute gramine callback function and check result
-        ret = self._func_ra_tls_verify_callback(cert, len(cert))
+        ret = self._func_ra_tls_verify_callback(cert_bytes_der, len(cert_bytes_der))
         if ret < 0:
             raise AttestationError(ret)
+        
+        cert_info = RaTlsCertInfo(cert_bytes_der)
+        custom_verification_passed = self.custom_verify_callback(
+            cert_info.mr_enclave,
+            cert_info.mr_signer,
+            cert_info.isv_prodid,
+            cert_info.isv_svn,
+            cert_info.debug_bit
+        )
 
-
+        if not custom_verification_passed:
+            raise AttestationError(RaTlsVerifier.custom_verify_callback.__name__)
+    
 class RaTlsClient:
     def __init__(
         self,
-        mr_enclave,
-        mr_signer,
-        isv_prod_id,
-        isv_svn,
-        allow_debug_enclave_insecure,
-        allow_outdated_tcb_insecure,
-        allow_hw_config_needed,
-        allow_sw_hardening_needed,
-        protocol="dcap",
+        verifier,
+        cert_file=None,
+        key_file=None,
     ):
-        self.verifier = Verifier(
-            mr_enclave,
-            mr_signer,
-            isv_prod_id,
-            isv_svn,
-            allow_debug_enclave_insecure,
-            allow_outdated_tcb_insecure,
-            allow_hw_config_needed,
-            allow_sw_hardening_needed,
-            protocol,
-        )
+        self.verifier = verifier
+        self.cert_file = cert_file
+        self.key_file = key_file
     
-    def connect(self, hostname, port):
-        # Create TLS connection
-        context = (
-            ssl._create_unverified_context()
-        )  # pylint: disable=protected-access
-        
-        # Connect to the server and initiate the TLS handshake
-        sock = socket.create_connection((hostname, port))
-        ssock = context.wrap_socket(sock, server_hostname=hostname)
+    async def connect(self, loop, hostname, port):
+        # Create an SSL context
+        context = ssl._create_unverified_context()  # pylint: disable=protected-access
+        if self.client_cert or self.client_key:
+            context.load_cert_chain(certfile=self.client_cert, keyfile=self.client_key)
+            
+        raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        raw_sock.setblocking(False)
 
-        # Verify enclave attestation with proper callback function
+        await loop.sock_connect(raw_sock, (hostname, port))
+
+        # Perform TLS handshake in an executor
+        def do_handshake():
+            ssock = context.wrap_socket(raw_sock, server_hostname=hostname)
+            ssock.do_handshake()
+            return ssock
+
+        try:
+            ssock = await loop.run_in_executor(None, do_handshake)
+        except ssl.SSLError as e:
+            raw_sock.close()
+            raise ConnectionError(f"TLS handshake failed: {e}")
+
+        # Verify enclave attestation with the provided verifier
         try:
             # NEVER SEND ANYTHING TO THE SERVER BEFORE THIS LINE
-            self.verifier._verify_ra_tls_cb(ssock.getpeercert(binary_form=True))
+            self.verifier.verify_ra_tls(ssock.getpeercert(binary_form=True))
         except AttestationError:
             ssock.close()
             raise
-        
-        return ssock
-    
-class MutualRaTlsClient:
-    def __init__(
-        self,
-        client_cert,
-        client_key,
-        mr_enclave,
-        mr_signer,
-        isv_prod_id,
-        isv_svn,
-        allow_debug_enclave_insecure,
-        allow_outdated_tcb_insecure,
-        allow_hw_config_needed,
-        allow_sw_hardening_needed,
-        protocol="dcap",
-    ):
-        self.client_cert = client_cert
-        self.client_key = client_key
-        self.verifier = Verifier(
-            mr_enclave,
-            mr_signer,
-            isv_prod_id,
-            isv_svn,
-            allow_debug_enclave_insecure,
-            allow_outdated_tcb_insecure,
-            allow_hw_config_needed,
-            allow_sw_hardening_needed,
-            protocol,
-        )
-    
-    def connect(self, hostname, port):
-        # Create TLS connection
-        context = (
-            ssl._create_unverified_context()
-        )  # pylint: disable=protected-access
-        context.load_cert_chain(certfile=self.client_cert, keyfile=self.client_key)
-        
-        # Connect to the server and initiate the TLS handshake
-        sock = socket.create_connection((hostname, port))
-        ssock = context.wrap_socket(sock, server_hostname=hostname)
 
-        # Verify enclave attestation with proper callback function
-        try:
-            # NEVER SEND ANYTHING TO THE SERVER BEFORE THIS LINE
-            self.verifier._verify_ra_tls_cb(ssock.getpeercert(binary_form=True))
-        except AttestationError:
-            ssock.close()
-            raise
-        
         return ssock
     
 class RaTlsServer:
@@ -215,69 +203,69 @@ class RaTlsServer:
         self,
         server_cert,
         server_key,
-        mr_enclave,
-        mr_signer,
-        isv_prod_id,
-        isv_svn,
-        allow_debug_enclave_insecure,
-        allow_outdated_tcb_insecure,
-        allow_hw_config_needed,
-        allow_sw_hardening_needed,
-        protocol="dcap",
+        verifier,
     ):
+        self.verifier = verifier
         self.server_cert = server_cert
         self.server_key = server_key
-        self.verifier = Verifier(
-            mr_enclave,
-            mr_signer,
-            isv_prod_id,
-            isv_svn,
-            allow_debug_enclave_insecure,
-            allow_outdated_tcb_insecure,
-            allow_hw_config_needed,
-            allow_sw_hardening_needed,
-            protocol,
-        )
+        self.context = None
         self.server_socket = None
-        self.tls_socket = None
         
     def __enter__(self):
         return self
+    
     def __exit__(self, exec_type, exec_val, exec_tb):
         self.close()
             
     def close(self):
-        if self.tls_socket is not None:
-            self.tls_socket.close()
+        if self.server_socket is not None:
+            self.server_socket.close()
     
     def bind_and_listen(self, hostname, port):
-        context = SSL.Context(SSL.TLS_SERVER_METHOD)
-        context.use_privatekey_file(self.server_key)
-        context.use_certificate_chain_file(self.server_cert)
+        # We need to use OpenSSL because mutual tls doesn't want to work
+        # with RA-TLS certificates using the built-in ssl module. 
+        # context.set_verify is more flexible for our use case. It's not 
+        # as scalable though because it doesn't have native asyncio support.
+        self.context = SSL.Context(SSL.TLS_SERVER_METHOD)
+        self.context.use_privatekey_file(self.server_key)
+        self.context.use_certificate_chain_file(self.server_cert)
 
         # Enforce client certificates
-        context.set_verify(
+        self.context.set_verify(
             SSL.VERIFY_PEER | SSL.VERIFY_FAIL_IF_NO_PEER_CERT, self.verify_callback
         )
 
         # Start the server
-        self.server_socket = socket.socket()
-        self.tls_socket = SSL.Connection(context, self.server_socket)
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind((hostname, port))
+        self.server_socket.listen()
+        self.server_socket.setblocking(False)
 
-        self.tls_socket.bind((hostname, port))
-        self.tls_socket.listen()
+    async def _handle_client(self, loop, client_sock, client_addr, handle_client):
+        # Wrap the raw socket with OpenSSL
+        tls_conn = SSL.Connection(self.context, client_sock)
+        tls_conn.set_accept_state()
+
+        try:
+            await loop.run_in_executor(None, tls_conn.do_handshake)
+            await handle_client(client_sock, client_addr, loop)
+        finally:
+            tls_conn.shutdown()
+            tls_conn.close()
 
     def verify_callback(self, connection, x509_cert, errno, depth, preverify_ok):
         """Custom certificate verification callback."""
         if depth == 0:  # Only check the end-entity certificate
             try:
-                self.verifier._verify_ra_tls_cb(x509_cert.to_cryptography().public_bytes(encoding=serialization.Encoding.DER))
+                self.verifier.verify_ra_tls(x509_cert.to_cryptography().public_bytes(encoding=serialization.Encoding.DER))
             except AttestationError:
                 return False
             return True
         return preverify_ok
 
-    def accept(self):
-        conn, addr = self.tls_socket.accept()
-        
-        return (conn, addr)
+    async def accept(self, handle_client_callback, loop=None):
+        loop = asyncio.get_event_loop() if loop is None else loop
+        client_sock, client_addr = await loop.sock_accept(self.server_socket)
+        print(f"Accepted connection from {client_addr}")
+        asyncio.create_task(self._handle_client(loop, client_sock, client_addr, handle_client_callback))

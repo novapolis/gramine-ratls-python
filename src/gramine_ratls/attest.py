@@ -102,6 +102,33 @@ def get_pem_bytes_from_der(
 
     return bytes(pem)
 
+def write_ra_tls_key_and_crt(
+    key_file_path: str, cert_file_path: str, format: str = "pem"
+) -> None:
+    """
+    This function uses get_ra_tls_key_and_crt to
+    load the gramine libra_tls_attest.so
+    binary library and calls the ra_tls_create_key_and_crt_der
+    function to get the ra-tls key and certificate
+    for the enclave it's running in.
+
+    The key and certificate content are then written out
+    either in "der" or "pem" format to the specified location.
+    These can be used in place of standard TLS certificate and key
+    for setting up a server with RA-TLS.
+
+    Args:
+        key_file_path (str):  The file path for the created key
+        cert_file_path (str): The file path for the created crt
+        format (str): The format of the output files ("der" or "pem")
+    """
+    (key_bytes_dem, crt_bytes_dem) = get_ra_tls_key_and_crt(format)
+
+    with open(key_file_path, "wb") as key_file:
+        key_file.write(key_bytes_dem)
+
+    with open(cert_file_path, "wb") as crt_file:
+        crt_file.write(crt_bytes_dem)
 
 def get_ra_tls_key_and_crt(
     format: str = "pem"
@@ -112,10 +139,10 @@ def get_ra_tls_key_and_crt(
     function to get the ra-tls key and certificate
     for the enclave it's running in.
 
-    The key and certificate content are then written out
-    either in "der" or "pem" format to the specified location.
-    These can be used in place of standard TLS certificate and key
-    for setting up a server with RA-TLS.
+    The key and certificate are then returned as byte arrays
+    either in "der" or "pem" format.
+    These can be written to file and used in place of standard
+    TLS certificate and key for setting up a server with RA-TLS.
 
     Args:
         key_file_path (str):  The file path for the created key
@@ -187,13 +214,3 @@ def get_ra_tls_key_and_crt(
         
     return (key_bytes_dem, crt_bytes_dem)
         
-def write_ra_tls_key_and_crt(
-    key_file_path: str, cert_file_path: str, format: str = "pem"
-) -> None:
-    (key_bytes_dem, crt_bytes_dem) = get_ra_tls_key_and_crt(format)
-
-    with open(key_file_path, "wb") as key_file:
-        key_file.write(key_bytes_dem)
-
-    with open(cert_file_path, "wb") as crt_file:
-        crt_file.write(crt_bytes_dem)
