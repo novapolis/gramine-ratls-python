@@ -248,7 +248,7 @@ class RaTlsServer:
 
         try:
             await loop.run_in_executor(None, tls_conn.do_handshake)
-            await handle_client(tls_conn, client_addr, loop)
+            await handle_client(tls_conn, client_addr, RaTlsCertInfo(tls_conn.get_peer_certificate().to_cryptography().public_bytes(encoding=serialization.Encoding.DER)))
         finally:
             tls_conn.shutdown()
             tls_conn.close()
