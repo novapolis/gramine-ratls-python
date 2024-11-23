@@ -240,7 +240,6 @@ class RaTlsServer:
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind((hostname, port))
         self.server_socket.listen()
-        self.server_socket.setblocking(False)
 
     async def _handle_client(self, loop, client_sock, client_addr, handle_client):
         # Wrap the raw socket with OpenSSL
@@ -249,7 +248,7 @@ class RaTlsServer:
 
         try:
             await loop.run_in_executor(None, tls_conn.do_handshake)
-            await handle_client(client_sock, client_addr, loop)
+            await handle_client(tls_conn, client_addr, loop)
         finally:
             tls_conn.shutdown()
             tls_conn.close()
@@ -266,6 +265,6 @@ class RaTlsServer:
 
     async def accept(self, handle_client_callback, loop=None):
         loop = asyncio.get_event_loop() if loop is None else loop
-        client_sock, client_addr = await loop.sock_accept(self.server_socket)
+        client_sock, client_addr = await loop.run_in_executor(None, self.server_socket.accept)
         print(f"Accepted connection from {client_addr}")
         asyncio.create_task(self._handle_client(loop, client_sock, client_addr, handle_client_callback))
