@@ -11,6 +11,7 @@ from OpenSSL import SSL
 from cryptography import x509
 from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import serialization
+from asyncio import CancelledError
 import socket
 
 NON_STANDARD_INTEL_SGX_QUOTE_OID = "0.6.9.42.840.113741.1337.6"
@@ -210,6 +211,7 @@ class RaTlsServer:
         self.server_key = server_key
         self.context = None
         self.server_socket = None
+        self.connections = dict()
         
     def __enter__(self):
         return self
@@ -238,6 +240,7 @@ class RaTlsServer:
         # Start the server
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.settimeout(1.0)
         self.server_socket.bind((hostname, port))
         self.server_socket.listen()
 
@@ -252,6 +255,7 @@ class RaTlsServer:
         finally:
             tls_conn.shutdown()
             tls_conn.close()
+            self.connections.pop(client_addr)  # remove active connection task
 
     def verify_callback(self, connection, x509_cert, errno, depth, preverify_ok):
         """Custom certificate verification callback."""
@@ -267,4 +271,22 @@ class RaTlsServer:
         loop = asyncio.get_event_loop() if loop is None else loop
         client_sock, client_addr = await loop.run_in_executor(None, self.server_socket.accept)
         print(f"Accepted connection from {client_addr}")
-        asyncio.create_task(self._handle_client(loop, client_sock, client_addr, handle_client_callback))
+        return (client_addr, asyncio.create_task(self._handle_client(loop, client_sock, client_addr, handle_client_callback)))
+    
+    async def serve(self, handle_client_callback, loop=None):
+        try:
+            while True:
+                try:
+                    addr, task = await self.accept(handle_client_callback, loop)
+                    self.connections[addr] = task
+                    # await asyncio.gather(*self.connections.values())  # unreachable
+                except TimeoutError:
+                    continue
+        except CancelledError:
+            for task in self.connections.values():
+                task.cancel()  # cancel remaining tasks explicitly
+            await asyncio.gather(*self.connections.values(), return_exceptions=True)
+
+
+
+
