@@ -26,7 +26,9 @@ class RaTlsCertInfo:
         extension = self.certificate.extensions.get_extension_for_oid(
             x509.ObjectIdentifier(NON_STANDARD_INTEL_SGX_QUOTE_OID)) # TODO: use evidence format instead
         if (extension is None):
-            raise ValueError("No SGX quote extension.")
+            self.is_ratls = False
+            return
+        self.is_ratls = True
         self.quote = extension.value.public_bytes()
         self.attributes_flags = int.from_bytes(self.quote[96:104], byteorder="little")
         self.debug_bit = self.quote[96] & 2 > 0
@@ -108,6 +110,9 @@ class RaTlsVerifier:
         else:
             os.environ[var] = value
 
+    def custom_verify_nonratls_callback(self, cert_bytes_der):
+        return False
+
     def custom_verify_callback(self, mr_enclave, mr_signer, isv_prod_id, isv_svn, debug_flag):
         """
         Custom callback for inheritors to implement, allowing you to filter
@@ -138,12 +143,16 @@ class RaTlsVerifier:
             "RA_TLS_ALLOW_SW_HARDENING_NEEDED", self.allow_sw_hardening_needed
         )
 
+        cert_info = RaTlsCertInfo(cert_bytes_der)
+
+        if not cert_info.is_ratls:
+            return self.custom_verify_nonratls_callback(cert_bytes_der)
+
         # Execute gramine callback function and check result
         ret = self._func_ra_tls_verify_callback(cert_bytes_der, len(cert_bytes_der))
         if ret < 0:
             raise AttestationError(ret)
         
-        cert_info = RaTlsCertInfo(cert_bytes_der)
         custom_verification_passed = self.custom_verify_callback(
             cert_info.mr_enclave,
             cert_info.mr_signer,
@@ -169,8 +178,8 @@ class RaTlsClient:
     async def connect(self, loop, hostname, port):
         # Create an SSL context
         context = ssl._create_unverified_context()  # pylint: disable=protected-access
-        if self.client_cert or self.client_key:
-            context.load_cert_chain(certfile=self.client_cert, keyfile=self.client_key)
+        if self.cert_file is not None:
+            context.load_cert_chain(certfile=self.cert_file, keyfile=self.key_file)
             
         raw_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         raw_sock.setblocking(False)
@@ -245,13 +254,15 @@ class RaTlsServer:
         self.server_socket.listen()
 
     async def _handle_client(self, loop, client_sock, client_addr, handle_client):
+        if self.context is None: return
         # Wrap the raw socket with OpenSSL
         tls_conn = SSL.Connection(self.context, client_sock)
         tls_conn.set_accept_state()
 
         try:
             await loop.run_in_executor(None, tls_conn.do_handshake)
-            await handle_client(tls_conn, client_addr, RaTlsCertInfo(tls_conn.get_peer_certificate().to_cryptography().public_bytes(encoding=serialization.Encoding.DER)))
+            cert = tls_conn.get_peer_certificate()
+            await handle_client(tls_conn, client_addr, RaTlsCertInfo(None if cert is None else cert.to_cryptography().public_bytes(encoding=serialization.Encoding.DER)))
         finally:
             tls_conn.shutdown()
             tls_conn.close()
@@ -268,6 +279,7 @@ class RaTlsServer:
         return preverify_ok
 
     async def accept(self, handle_client_callback, loop=None):
+        if self.server_socket is None: raise ConnectionError()
         loop = asyncio.get_event_loop() if loop is None else loop
         client_sock, client_addr = await loop.run_in_executor(None, self.server_socket.accept)
         print(f"Accepted connection from {client_addr}")
