@@ -22,10 +22,14 @@ class AttestationError(Exception):
 
 class RaTlsCertInfo:
     def __init__(self, crt_bytes_der):
+        if crt_bytes_der is None:
+            self.is_ratls = False
+            return
         self.certificate = x509.load_der_x509_certificate(bytes(crt_bytes_der), default_backend())
-        extension = self.certificate.extensions.get_extension_for_oid(
-            x509.ObjectIdentifier(NON_STANDARD_INTEL_SGX_QUOTE_OID)) # TODO: use evidence format instead
-        if (extension is None):
+        try:
+            extension = self.certificate.extensions.get_extension_for_oid(
+                x509.ObjectIdentifier(NON_STANDARD_INTEL_SGX_QUOTE_OID)) # TODO: use evidence format instead
+        except:
             self.is_ratls = False
             return
         self.is_ratls = True
@@ -110,7 +114,7 @@ class RaTlsVerifier:
         else:
             os.environ[var] = value
 
-    def custom_verify_nonratls_callback(self, cert_bytes_der):
+    def custom_verify_nonratls_callback(self, cert_bytes_der) -> bool:
         return False
 
     def custom_verify_callback(self, mr_enclave, mr_signer, isv_prod_id, isv_svn, debug_flag):
@@ -144,9 +148,12 @@ class RaTlsVerifier:
         )
 
         cert_info = RaTlsCertInfo(cert_bytes_der)
-
+        
         if not cert_info.is_ratls:
-            return self.custom_verify_nonratls_callback(cert_bytes_der)
+            ret = self.custom_verify_nonratls_callback(cert_bytes_der)
+            if not ret:
+                raise AttestationError("Non-RA TLS verification failed.")
+            return
 
         # Execute gramine callback function and check result
         ret = self._func_ra_tls_verify_callback(cert_bytes_der, len(cert_bytes_der))
@@ -260,8 +267,12 @@ class RaTlsServer:
         tls_conn.set_accept_state()
 
         try:
-            await loop.run_in_executor(None, tls_conn.do_handshake)
-            cert = tls_conn.get_peer_certificate()
+            try:
+                await loop.run_in_executor(None, tls_conn.do_handshake)
+                cert = tls_conn.get_peer_certificate()
+            except:
+                cert = None
+
             await handle_client(tls_conn, client_addr, RaTlsCertInfo(None if cert is None else cert.to_cryptography().public_bytes(encoding=serialization.Encoding.DER)))
         finally:
             tls_conn.shutdown()
