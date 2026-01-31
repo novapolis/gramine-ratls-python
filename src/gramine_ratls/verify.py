@@ -195,8 +195,13 @@ class RaTlsClient:
 
         # Perform TLS handshake in an executor
         def do_handshake():
-            ssock = context.wrap_socket(raw_sock, server_hostname=hostname)
+            ssock = context.wrap_socket(
+                raw_sock,
+                server_hostname=hostname,
+                do_handshake_on_connect=False,
+            )
             ssock.do_handshake()
+            ssock.setblocking(False)
             return ssock
 
         try:
@@ -275,7 +280,10 @@ class RaTlsServer:
 
             await handle_client(tls_conn, client_addr, RaTlsCertInfo(None if cert is None else cert.to_cryptography().public_bytes(encoding=serialization.Encoding.DER)))
         finally:
-            tls_conn.shutdown()
+            try:
+                tls_conn.shutdown()
+            except Exception:
+                pass
             tls_conn.close()
             self.connections.pop(client_addr)  # remove active connection task
 
@@ -292,7 +300,12 @@ class RaTlsServer:
     async def accept(self, handle_client_callback, loop=None):
         if self.server_socket is None: raise ConnectionError()
         loop = asyncio.get_event_loop() if loop is None else loop
-        client_sock, client_addr = await loop.run_in_executor(None, self.server_socket.accept)
+        try:
+            client_sock, client_addr = await loop.run_in_executor(
+                None, self.server_socket.accept
+            )
+        except socket.timeout as exc:
+            raise TimeoutError() from exc
         print(f"Accepted connection from {client_addr}")
         return (client_addr, asyncio.create_task(self._handle_client(loop, client_sock, client_addr, handle_client_callback)))
     
